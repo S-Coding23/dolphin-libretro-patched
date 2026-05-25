@@ -22,39 +22,33 @@ jobs:
         shell: pwsh
         run: |
           $file = "dolphin-src/Source/Core/DolphinLibretro/Main.cpp"
-          $content = Get-Content $file -Raw
-
-          # Patch 1: After RunGpuLoop/RunSingleFrame block, before RETRO_PERFORMANCE_STOP,
-          # insert glFinish() for the OGL backend.
-          # We match the exact closing brace + blank line before RETRO_PERFORMANCE_STOP.
-          $oldBlock = @"
-    system.GetCPU().RunSingleFrame();
-  }
-
-  RETRO_PERFORMANCE_STOP(dolphin_main_func);
-"@
-
-          $newBlock = @"
-    system.GetCPU().RunSingleFrame();
-  }
-
-  // [Rec0m88 patch] Flush pending GL commands so the XFB present blit
-  // to the system framebuffer completes before retro_run() returns.
-  // Without this, frontends doing glReadPixels get black/partial frames.
-  if (g_gfx && Config::Get(Config::MAIN_GFX_BACKEND) == "OGL")
-  {
-    glFinish();
-  }
-
-  RETRO_PERFORMANCE_STOP(dolphin_main_func);
-"@
-
-          if ($content.Contains("system.GetCPU().RunSingleFrame();")) {
-            $content = $content.Replace($oldBlock, $newBlock)
-            Set-Content $file -Value $content -NoNewline
+          $lines = [System.IO.File]::ReadAllLines($file)
+          $out = [System.Collections.Generic.List[string]]::new()
+          $patched = $false
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            $out.Add($lines[$i])
+            if ($lines[$i].Trim() -eq "system.GetCPU().RunSingleFrame();" -and -not $patched) {
+              # Find the closing brace of the else block (next line with just "}")
+              while ($i + 1 -lt $lines.Count) {
+                $i++
+                $out.Add($lines[$i])
+                if ($lines[$i].Trim() -eq "}") { break }
+              }
+              # Insert the glFinish block
+              $out.Add("")
+              $out.Add("  // [Rec0m88] Flush GL so XFB blit completes before retro_run returns")
+              $out.Add("  if (g_gfx && Config::Get(Config::MAIN_GFX_BACKEND) == `"OGL`")")
+              $out.Add("  {")
+              $out.Add("    glFinish();")
+              $out.Add("  }")
+              $patched = $true
+            }
+          }
+          if ($patched) {
+            [System.IO.File]::WriteAllLines($file, $out.ToArray())
             Write-Host "Patch applied successfully"
           } else {
-            Write-Error "Could not find patch target in Main.cpp"
+            Write-Error "Could not find RunSingleFrame in Main.cpp"
             exit 1
           }
 
