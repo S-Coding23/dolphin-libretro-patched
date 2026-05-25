@@ -1,0 +1,38 @@
+name: Build patched dolphin_libretro (Win64)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout this repo (contains the patch)
+        uses: actions/checkout@v4
+
+      - name: Clone dolphin-libretro
+        run: |
+          git clone --depth=1 https://github.com/libretro/dolphin.git dolphin-src
+          cd dolphin-src
+          git submodule update --init --recursive
+
+      - name: Apply glFinish patch
+        run: |
+          cd dolphin-src
+          git apply ../patches/0001-force-glFinish-after-frame.patch
+
+      - name: Build dolphin_libretro.dll
+        run: |
+          cd dolphin-src
+          mkdir build
+          cd build
+          cmake.exe -DLIBRETRO=ON -DENABLE_QT=0 -DCMAKE_POLICY_VERSION_MINIMUM="3.5" -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DCMAKE_CXX_FLAGS="/WX-" -DCMAKE_C_FLAGS="/WX-" ..
+          cmake.exe --build . --target dolphin_libretro --config Release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dolphin_libretro-win64-patched
+          path: dolphin-src/build/**/dolphin_libretro.dll

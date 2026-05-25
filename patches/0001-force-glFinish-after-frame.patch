@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 
+From: R
+Date: Sun, 25 May 2026 00:00:00 +0000
+Subject: [PATCH] Force glFinish() after frame to flush XFB blit for libretro
+ frontends
+
+Dolphin's OGL backend renders into its own internal EFB FBO and blits
+the final XFB image to the system framebuffer (provided by the libretro
+frontend via get_current_framebuffer). However, the GL commands for
+this blit may still be in the GPU pipeline when retro_run() returns.
+
+Libretro frontends that do CPU-side readback (glReadPixels) of the
+system framebuffer see black or partial frames because the blit hasn't
+completed yet. Adding glFinish() after the GPU loop ensures all GL
+commands — including the XFB present blit — have completed before
+retro_run() returns, so the frontend reads the correct frame.
+
+This only fires on the OGL backend path where SetSystemFrameBuffer
+was already called.
+
+diff --git a/Source/Core/DolphinLibretro/Main.cpp b/Source/Core/DolphinLibretro/Main.cpp
+index 1234567..abcdefg 100644
+--- a/Source/Core/DolphinLibretro/Main.cpp
++++ b/Source/Core/DolphinLibretro/Main.cpp
+@@ -1,5 +1,6 @@
+ #include <cstdint>
+ #include <libretro.h>
++#include <GL/gl.h>
+ #include <string>
+ #include <thread>
+ #include <fstream>
+@@ -350,6 +351,14 @@ void retro_run(void)
+     system.GetCPU().RunSingleFrame();
+   }
+ 
++  // Flush all pending GL commands so the XFB present blit to the
++  // system framebuffer is complete before retro_run() returns.
++  // Without this, frontends doing glReadPixels on the system FBO
++  // see black/partial frames due to in-flight GPU commands.
++  if (g_gfx && Config::Get(Config::MAIN_GFX_BACKEND) == "OGL")
++  {
++    glFinish();
++  }
+ 
+   RETRO_PERFORMANCE_STOP(dolphin_main_func);
