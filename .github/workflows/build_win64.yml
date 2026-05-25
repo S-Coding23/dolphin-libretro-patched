@@ -28,13 +28,11 @@ jobs:
           for ($i = 0; $i -lt $lines.Count; $i++) {
             $out.Add($lines[$i])
             if ($lines[$i].Trim() -eq "system.GetCPU().RunSingleFrame();" -and -not $patched) {
-              # Find the closing brace of the else block (next line with just "}")
               while ($i + 1 -lt $lines.Count) {
                 $i++
                 $out.Add($lines[$i])
                 if ($lines[$i].Trim() -eq "}") { break }
               }
-              # Insert the glFinish block
               $out.Add("")
               $out.Add("  // [Rec0m88] Flush GL so XFB blit completes before retro_run returns")
               $out.Add("  if (g_gfx && Config::Get(Config::MAIN_GFX_BACKEND) == `"OGL`")")
@@ -63,24 +61,49 @@ jobs:
             exit 1
           }
 
-      - name: Build dolphin_libretro.dll
+      - name: Configure CMake
         run: |
           cd dolphin-src
           mkdir build
           cd build
           cmake.exe -DLIBRETRO=ON -DENABLE_QT=0 -DCMAKE_POLICY_VERSION_MINIMUM="3.5" -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DCMAKE_CXX_FLAGS="/WX-" -DCMAKE_C_FLAGS="/WX-" ..
+
+      - name: Build
+        run: |
+          cd dolphin-src/build
           cmake.exe --build . --target dolphin_libretro --config Release
 
-      - name: Find and upload DLL
+      - name: List all build outputs
         shell: pwsh
         run: |
-          $dll = Get-ChildItem -Path dolphin-src/build -Recurse -Filter "dolphin_libretro.dll" | Select-Object -First 1
+          Write-Host "=== All DLLs in build tree ==="
+          Get-ChildItem -Path dolphin-src/build -Recurse -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
+          Write-Host ""
+          Write-Host "=== All files matching dolphin* ==="
+          Get-ChildItem -Path dolphin-src/build -Recurse -Filter "dolphin*" | ForEach-Object { Write-Host "$($_.FullName)  ($($_.Length) bytes)" }
+          Write-Host ""
+          Write-Host "=== Binaries folder (if exists) ==="
+          if (Test-Path "dolphin-src/build/Binaries") {
+            Get-ChildItem -Path dolphin-src/build/Binaries -Recurse | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Host "No Binaries folder found"
+          }
+          Write-Host ""
+          Write-Host "=== Top-level build folder ==="
+          Get-ChildItem -Path dolphin-src/build -Depth 1 | ForEach-Object { Write-Host $_.FullName }
+
+      - name: Find and stage DLL
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path dolphin-src -Recurse -Filter "dolphin_libretro.dll" | Select-Object -First 1
+          if (-not $dll) {
+            $dll = Get-ChildItem -Path dolphin-src -Recurse -Filter "dolphin*.dll" | Select-Object -First 1
+          }
           if ($dll) {
             Write-Host "Found DLL at: $($dll.FullName)"
             Copy-Item $dll.FullName -Destination ./dolphin_libretro.dll
           } else {
-            Write-Error "dolphin_libretro.dll not found in build output"
-            Get-ChildItem -Path dolphin-src/build -Recurse -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
+            Write-Error "No dolphin DLL found anywhere in build tree"
             exit 1
           }
 
