@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout this repo (contains the patch)
+      - name: Checkout this repo
         uses: actions/checkout@v4
 
       - name: Clone dolphin-libretro
@@ -18,10 +18,56 @@ jobs:
           cd dolphin-src
           git submodule update --init --recursive
 
-      - name: Apply glFinish patch
+      - name: Patch Main.cpp - add glFinish after frame
+        shell: pwsh
         run: |
-          cd dolphin-src
-          git apply ../patches/0001-force-glFinish-after-frame.patch
+          $file = "dolphin-src/Source/Core/DolphinLibretro/Main.cpp"
+          $content = Get-Content $file -Raw
+
+          # Patch 1: After RunGpuLoop/RunSingleFrame block, before RETRO_PERFORMANCE_STOP,
+          # insert glFinish() for the OGL backend.
+          # We match the exact closing brace + blank line before RETRO_PERFORMANCE_STOP.
+          $oldBlock = @"
+    system.GetCPU().RunSingleFrame();
+  }
+
+  RETRO_PERFORMANCE_STOP(dolphin_main_func);
+"@
+
+          $newBlock = @"
+    system.GetCPU().RunSingleFrame();
+  }
+
+  // [Rec0m88 patch] Flush pending GL commands so the XFB present blit
+  // to the system framebuffer completes before retro_run() returns.
+  // Without this, frontends doing glReadPixels get black/partial frames.
+  if (g_gfx && Config::Get(Config::MAIN_GFX_BACKEND) == "OGL")
+  {
+    glFinish();
+  }
+
+  RETRO_PERFORMANCE_STOP(dolphin_main_func);
+"@
+
+          if ($content.Contains("system.GetCPU().RunSingleFrame();")) {
+            $content = $content.Replace($oldBlock, $newBlock)
+            Set-Content $file -Value $content -NoNewline
+            Write-Host "Patch applied successfully"
+          } else {
+            Write-Error "Could not find patch target in Main.cpp"
+            exit 1
+          }
+
+      - name: Verify patch
+        shell: pwsh
+        run: |
+          $content = Get-Content "dolphin-src/Source/Core/DolphinLibretro/Main.cpp" -Raw
+          if ($content.Contains("glFinish()")) {
+            Write-Host "glFinish() found in patched file - OK"
+          } else {
+            Write-Error "glFinish() NOT found - patch failed"
+            exit 1
+          }
 
       - name: Build dolphin_libretro.dll
         run: |
@@ -31,8 +77,21 @@ jobs:
           cmake.exe -DLIBRETRO=ON -DENABLE_QT=0 -DCMAKE_POLICY_VERSION_MINIMUM="3.5" -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DCMAKE_CXX_FLAGS="/WX-" -DCMAKE_C_FLAGS="/WX-" ..
           cmake.exe --build . --target dolphin_libretro --config Release
 
+      - name: Find and upload DLL
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path dolphin-src/build -Recurse -Filter "dolphin_libretro.dll" | Select-Object -First 1
+          if ($dll) {
+            Write-Host "Found DLL at: $($dll.FullName)"
+            Copy-Item $dll.FullName -Destination ./dolphin_libretro.dll
+          } else {
+            Write-Error "dolphin_libretro.dll not found in build output"
+            Get-ChildItem -Path dolphin-src/build -Recurse -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: dolphin_libretro-win64-patched
-          path: dolphin-src/build/**/dolphin_libretro.dll
+          path: dolphin_libretro.dll
